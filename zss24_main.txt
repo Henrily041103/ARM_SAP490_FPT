@@ -1,0 +1,72 @@
+******************************************************************************
+*	Module(Sub)	  :                                                            *
+* Program name  : Z03_S40_GL_ITEM_RP                                         *
+* TYPE          : Report                                                     *
+* T_CODE        : ZSS24                                                      *
+*	Frequency	    :                                                            *
+*	Description	  : Detailed Account Receivable Report by Customer G/L Account *
+******************************************************************************
+*                       MODIFICATION LOG
+*&---------------------------------------------------------------------*
+*   CSR/Issue No.   Date          Authors     Description
+*&---------------------------------------------------------------------*
+*                   2024.11.19    DEV_204     First Create
+*         001       2024.11.21    DEV_204     Code refactor
+*         002       2024.12.01    DEV_204     SmartForms + Desc fixes
+*         003       2024.12.16    DEV_204     Select Options + queries
+*         004       2025.01.08    DEV_204     Refactor Post-Defense
+*&---------------------------------------------------------------------*
+*& Report Z03_S40_204_GL_ITEM_RP
+*&---------------------------------------------------------------------*
+*&---------------------------------------------------------------------*
+*& Includes
+*&---------------------------------------------------------------------*
+INCLUDE z03_s40_gl_item_rp_top                  . " Global Data
+INCLUDE z03_s40_gl_item_rp_f01                  . " Business Logic
+INCLUDE z03_s40_gl_item_rp_pbo01                . " PBO for DynPro
+INCLUDE z03_s40_gl_item_rp_pai01                . " PAI for DynPro
+
+*&---------------------------------------------------------------------*
+*& Program flow
+*&---------------------------------------------------------------------*
+*&---------------------------------------------------------------------*
+*& Initialize values
+*&---------------------------------------------------------------------*
+
+INITIALIZATION.
+  PERFORM init_comp_code.
+  PERFORM query_validation_data USING p_cmp_cd CHANGING gt_cus_cd gt_gl_acc.
+
+*&---------------------------------------------------------------------*
+*& Selection screen procressing
+*&---------------------------------------------------------------------*
+AT SELECTION-SCREEN ON s_gl_acc.
+  PERFORM validate_multi_gl_acc
+    USING s_gl_acc[]
+          gt_gl_acc.
+
+AT SELECTION-SCREEN ON s_cus_cd.
+  PERFORM validate_multi_cus_cd
+    USING s_cus_cd[]
+          gt_cus_cd.
+
+AT SELECTION-SCREEN OUTPUT.
+  PERFORM lock_fields
+    USING rb_open
+          rb_clear
+          rb_all.
+
+AT SELECTION-SCREEN.
+  PERFORM validate_gl_acc
+    USING s_gl_acc[]
+          gt_gl_acc.
+  PERFORM validate_cus_cd
+    USING s_cus_cd[]
+          gt_cus_cd.
+  PERFORM validate_type_cb.
+
+*&---------------------------------------------------------------------*
+*& Processing
+*&---------------------------------------------------------------------*
+START-OF-SELECTION.
+  PERFORM main.

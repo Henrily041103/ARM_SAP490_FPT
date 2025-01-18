@@ -1,0 +1,122 @@
+*&---------------------------------------------------------------------*
+*& Include Z03_S40_GL_ITEM_RP_TOP                   - Report Z03_S40_204_GL_ITEM_RP
+*&---------------------------------------------------------------------*
+REPORT z03_s40_204_gl_item_rp.
+
+TABLES: kna1, bseg.
+
+CONSTANTS: gc_north     TYPE prctr VALUE 'NVN',
+           gc_south     TYPE prctr VALUE 'SVN',
+           gc_head      TYPE prctr VALUE 'HVN',
+           gc_comp_code TYPE bukrs VALUE '1500'.
+
+" Structs
+TYPES:
+  BEGIN OF ty_inp_status,
+    open    TYPE char1,
+    cleared TYPE char1,
+    all     TYPE char1,
+  END OF ty_inp_status.
+
+" Input object
+TYPES:
+  BEGIN OF ty_gl_item_inp,
+    gl_acc_range   TYPE RANGE OF hkont, " GL Account
+    cust_num_range TYPE RANGE OF kunnr, " Customer Number
+    prof_cent      TYPE RANGE OF prctr, " Profit Center: N/S/H
+    status         TYPE ty_inp_status, " Status: O/C/A
+    clr_dat        TYPE RANGE OF augdt, " Clearing date
+    pst_dat        TYPE RANGE OF budat, " Posting date
+    gl_type        TYPE RANGE OF umskz, " G/L Type: Special / Posted
+    gl_type_norm   TYPE char1, " G/L Type normal items ( need different handling )
+  END OF ty_gl_item_inp.
+
+" Output object
+TYPES:
+  BEGIN OF ty_gl_item_out,
+    select_box  TYPE char1,
+    status      TYPE char11,
+    cust_num    TYPE kunnr,
+    gl_acc      TYPE hkont,
+    doc_num     TYPE belnr_d,
+    prof_cent   TYPE prctr,
+    doc_type    TYPE blart,
+    post_date   TYPE budat,
+    doc_date    TYPE bldat,
+    due_date    TYPE dzfbdt,
+    day_overdue TYPE int4,
+    amount      TYPE wrbtr,
+    curr        TYPE fins_currfc,
+    clear_date  TYPE augdt,
+    pay_opt     TYPE dzterm,
+    over_days   TYPE dztage,
+    dc_ind      TYPE shkzg,
+    clear_doc   TYPE augbl,
+    cust_name   TYPE name1_gp,
+    fis_year    TYPE gjahr,
+    text        TYPE sgtxt,
+    gl_name     TYPE txt20_skat,
+    item_num    TYPE buzei,
+    clear_year  TYPE auggj,
+  END OF ty_gl_item_out.
+
+" Table & Range types:
+TYPES:
+  ty_t_gl_item_out TYPE STANDARD TABLE OF ty_gl_item_out,
+  ty_t_gl_acc        TYPE STANDARD TABLE OF hkont,
+  ty_t_cus_cd        TYPE STANDARD TABLE OF kunnr,
+  ty_gl_acc        TYPE RANGE OF hkont,
+  ty_cus_cd        TYPE RANGE OF kunnr.
+
+" Global data
+DATA: gt_gl_item_output TYPE ty_t_gl_item_out,  "#EC NEEDED
+      gt_cus_cd TYPE ty_t_cus_cd,  "#EC NEEDED
+      gt_gl_acc TYPE ty_t_gl_acc.  "#EC NEEDED
+
+" DynPro data
+DATA:
+  gv_repnum TYPE n LENGTH 10,
+  gv_okcode LIKE sy-ucomm.
+
+*&---------------------------------------------------------------------*
+*& Selection screen
+*&---------------------------------------------------------------------*
+" Select main data
+SELECTION-SCREEN BEGIN OF BLOCK bl_main_data WITH FRAME TITLE TEXT-001.
+  PARAMETERS:     p_cmp_cd TYPE bkpf-bukrs.
+  SELECT-OPTIONS: s_gl_acc FOR bseg-hkont .
+  SELECT-OPTIONS: s_cus_cd FOR kna1-kunnr.
+SELECTION-SCREEN END OF BLOCK bl_main_data.
+
+" Select Profit center
+SELECTION-SCREEN BEGIN OF BLOCK bl_prf_cen WITH FRAME TITLE TEXT-002.
+  PARAMETERS: cb_north AS CHECKBOX DEFAULT 'X'.
+  PARAMETERS: cb_south AS CHECKBOX.
+  PARAMETERS: cb_head  AS CHECKBOX.
+SELECTION-SCREEN END OF BLOCK bl_prf_cen.
+
+" Select status
+SELECTION-SCREEN BEGIN OF BLOCK bl_stt_sel WITH FRAME TITLE TEXT-003.
+  PARAMETERS: rb_open RADIOBUTTON GROUP rg01 USER-COMMAND select_stt DEFAULT 'X'.
+  SELECTION-SCREEN BEGIN OF BLOCK bl_opn_sel WITH FRAME.
+    PARAMETERS: p_o_opnk TYPE bkpf-budat.
+  SELECTION-SCREEN END OF BLOCK bl_opn_sel.
+
+  PARAMETERS: rb_clear RADIOBUTTON GROUP rg01.
+  SELECTION-SCREEN BEGIN OF BLOCK bl_clr_sel WITH FRAME.
+    SELECT-OPTIONS: s_cl_dat FOR bseg-augdt.
+    PARAMETERS: p_c_opnk TYPE bkpf-budat.
+  SELECTION-SCREEN END OF BLOCK bl_clr_sel.
+
+  PARAMETERS: rb_all RADIOBUTTON GROUP rg01.
+  SELECTION-SCREEN BEGIN OF BLOCK bl_all_sel WITH FRAME.
+    SELECT-OPTIONS: s_ps_dat FOR bseg-h_budat.
+  SELECTION-SCREEN END OF BLOCK bl_all_sel.
+SELECTION-SCREEN END OF BLOCK bl_stt_sel.
+
+" Select G/L Type
+SELECTION-SCREEN BEGIN OF BLOCK bl_type WITH FRAME TITLE TEXT-034.
+  PARAMETERS: cb_norm AS CHECKBOX DEFAULT 'X'.
+  PARAMETERS: cb_spec AS CHECKBOX.
+  PARAMETERS: cb_note AS CHECKBOX.
+SELECTION-SCREEN END OF BLOCK bl_type.

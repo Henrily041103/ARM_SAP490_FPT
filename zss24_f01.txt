@@ -1,0 +1,1866 @@
+*&---------------------------------------------------------------------*
+*& Include Z03_S40_GL_ITEM_RP_F01
+*&---------------------------------------------------------------------*
+*&---------------------------------------------------------------------*
+*& Form MAIN
+*&---------------------------------------------------------------------*
+*& Main execution form
+*&---------------------------------------------------------------------*
+*&      --> I_T_GL_ITEM_OUTPUT
+*&---------------------------------------------------------------------*
+FORM main.
+  DATA ls_gl_item_input TYPE ty_gl_item_inp.
+
+  " Final validation before generation
+  PERFORM validate_required_fields.
+  PERFORM validate_gl_acc
+    USING s_gl_acc[]
+          gt_gl_acc.
+  PERFORM validate_cus_cd
+    USING s_cus_cd[]
+          gt_cus_cd.
+  PERFORM validate_type_cb.
+
+  " Assemble data into input structure
+  PERFORM assemble_data CHANGING ls_gl_item_input.
+
+  " Use input data to generate output data
+  PERFORM query_output_table USING    ls_gl_item_input
+                             CHANGING gt_gl_item_output.
+
+  " Generate ALV table
+  PERFORM generate_alv USING gt_gl_item_output.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*& Input Handlers
+*&---------------------------------------------------------------------*
+*&---------------------------------------------------------------------*
+*& Form init_comp_code
+*&---------------------------------------------------------------------*
+*& Initialize Company Code parameter
+*&---------------------------------------------------------------------*
+FORM init_comp_code.
+  GET PARAMETER ID 'BUK' FIELD DATA(lv_comp_code).
+
+  IF lv_comp_code IS NOT INITIAL.
+    p_cmp_cd = lv_comp_code.
+  ELSE.
+    SELECT SINGLE parva FROM usr05
+      WHERE bname = @sy-uname
+        AND parid = 'BUK'
+      INTO @lv_comp_code.
+    IF sy-subrc = 0.
+      p_cmp_cd = lv_comp_code.
+    ELSE.
+      p_cmp_cd = gc_comp_code.
+    ENDIF.
+
+    SET PARAMETER ID 'BUK' FIELD p_cmp_cd.
+  ENDIF.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*& Form ASSEMBLE_DATA
+*&---------------------------------------------------------------------*
+*& Assemble and set default for all input data
+*&---------------------------------------------------------------------*
+*&      <-- C_GL_ITEM_INPUT
+*&---------------------------------------------------------------------*
+FORM assemble_data CHANGING c_gl_item_input TYPE ty_gl_item_inp.
+  CONSTANTS lc_initial_date TYPE dats VALUE '00000000'.
+
+  DATA ls_prof_cent LIKE LINE OF c_gl_item_input-prof_cent.
+  DATA ls_pst_dat   LIKE LINE OF c_gl_item_input-pst_dat.
+  DATA ls_clr_dat   LIKE LINE OF c_gl_item_input-clr_dat.
+
+  c_gl_item_input-gl_acc_range   = s_gl_acc[].
+  c_gl_item_input-cust_num_range = s_cus_cd[].
+
+  " Remove leading 0 in non-check pattern entries for consistency
+  LOOP AT c_gl_item_input-gl_acc_range
+    ASSIGNING FIELD-SYMBOL(<lfs_gl_acc>).
+    IF <lfs_gl_acc>-option <> 'CP'.
+      " Has leading 0
+      IF <lfs_gl_acc>-low IS NOT INITIAL AND <lfs_gl_acc>-low+0(1) = '0'.
+        CALL FUNCTION 'CONVERSION_EXIT_ALPHA_OUTPUT'
+          EXPORTING
+            input  = <lfs_gl_acc>-low
+          IMPORTING
+            output = <lfs_gl_acc>-low.
+      ENDIF.
+
+      IF <lfs_gl_acc>-high IS NOT INITIAL
+        AND <lfs_gl_acc>-high+0(1) = '0'.
+        CALL FUNCTION 'CONVERSION_EXIT_ALPHA_OUTPUT'
+          EXPORTING
+            input  = <lfs_gl_acc>-high
+          IMPORTING
+            output = <lfs_gl_acc>-high.
+      ENDIF.
+    ENDIF.
+  ENDLOOP.
+
+  LOOP AT c_gl_item_input-cust_num_range
+    ASSIGNING FIELD-SYMBOL(<lfs_cus_cd>).
+    IF <lfs_cus_cd>-option <> 'CP'.
+      " Has leading 0
+      IF <lfs_cus_cd>-low IS NOT INITIAL
+        AND <lfs_cus_cd>-low+0(1) = '0'.
+        CALL FUNCTION 'CONVERSION_EXIT_ALPHA_OUTPUT'
+          EXPORTING
+            input  = <lfs_cus_cd>-low
+          IMPORTING
+            output = <lfs_cus_cd>-low.
+      ENDIF.
+
+      IF <lfs_cus_cd>-high IS NOT INITIAL
+        AND <lfs_cus_cd>-high+0(1) = '0'.
+        CALL FUNCTION 'CONVERSION_EXIT_ALPHA_OUTPUT'
+          EXPORTING
+            input  = <lfs_cus_cd>-high
+          IMPORTING
+            output = <lfs_cus_cd>-high.
+      ENDIF.
+    ENDIF.
+  ENDLOOP.
+
+  " If empty, select all
+  ls_prof_cent-sign   = 'I'.  " Include condition
+  ls_prof_cent-option = 'EQ'.  " Equal
+
+  IF cb_north = abap_true.
+    ls_prof_cent-low = gc_north.
+    APPEND ls_prof_cent TO c_gl_item_input-prof_cent.
+  ENDIF.
+
+  IF cb_south = abap_true.
+    ls_prof_cent-low = gc_south.
+    APPEND ls_prof_cent TO c_gl_item_input-prof_cent.
+  ENDIF.
+
+  IF cb_head = abap_true.
+    ls_prof_cent-low = gc_head.
+    APPEND ls_prof_cent TO c_gl_item_input-prof_cent.
+  ENDIF.
+
+  CLEAR ls_prof_cent.
+
+  " Set default posting date & clearing date
+  ls_pst_dat-sign   = 'I'.  " Include condition
+  ls_pst_dat-option = 'GT'.
+  ls_pst_dat-low    = lc_initial_date.
+
+  ls_clr_dat-sign   = 'I'.  " Include condition
+  ls_clr_dat-option = 'GT'.
+  ls_clr_dat-low    = lc_initial_date.
+
+  " Cannot be empty
+  IF rb_open = abap_true.
+    c_gl_item_input-status-open = abap_true.
+
+    " If empty, take all
+    IF p_o_opnk IS NOT INITIAL.
+      ls_pst_dat-option = 'BT'.
+      ls_pst_dat-high   = p_o_opnk.
+    ENDIF.
+
+    APPEND ls_clr_dat TO c_gl_item_input-clr_dat.
+    APPEND ls_pst_dat TO c_gl_item_input-pst_dat.
+  ELSEIF rb_clear = abap_true.
+    c_gl_item_input-status-cleared = abap_true.
+
+    " If empty, take all
+    IF lines( s_cl_dat ) > 0.
+      c_gl_item_input-clr_dat = s_cl_dat[].
+    ELSE.
+      APPEND ls_clr_dat TO c_gl_item_input-clr_dat.
+    ENDIF.
+
+    " If empty, take all
+    IF p_c_opnk IS NOT INITIAL.
+      ls_pst_dat-option = 'BT'.
+      ls_pst_dat-high   = p_c_opnk.
+    ENDIF.
+
+    APPEND ls_pst_dat TO c_gl_item_input-pst_dat.
+  ELSEIF rb_all = abap_true.
+    c_gl_item_input-status-all = abap_true.
+
+    IF lines( s_ps_dat ) > 0.
+      c_gl_item_input-pst_dat = s_ps_dat[].
+    ELSE.
+      APPEND ls_pst_dat TO c_gl_item_input-pst_dat.
+    ENDIF.
+
+    APPEND ls_clr_dat TO c_gl_item_input-clr_dat.
+  ENDIF.
+
+  CLEAR: ls_pst_dat,
+         ls_clr_dat.
+
+  " Type
+  c_gl_item_input-gl_type_norm = cb_norm.
+
+  DATA ls_type LIKE LINE OF c_gl_item_input-gl_type.
+  ls_type-sign   = 'I'.  " Include condition
+  ls_type-option = 'EQ'.  " Equal
+
+  IF cb_spec = abap_true.
+    ls_type-low = 'A'.
+    APPEND ls_type TO c_gl_item_input-gl_type.
+    CLEAR ls_type-low.
+  ENDIF.
+
+  IF cb_note = abap_true.
+    ls_type-low = 'F'.
+    APPEND ls_type TO c_gl_item_input-gl_type.
+    CLEAR ls_type-low.
+  ENDIF.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*& Form LOCK_FIELDS
+*&---------------------------------------------------------------------*
+*& Lock the params of unchosen status & Company Code
+*&---------------------------------------------------------------------*
+*&      --> I_OPEN
+*&      --> I_CLEAR
+*&      --> I_ALL
+*&---------------------------------------------------------------------*
+FORM lock_fields USING i_open  TYPE char1
+                       i_clear TYPE char1
+                       i_all   TYPE char1.
+
+  LOOP AT SCREEN.
+    IF screen-name = 'P_CMP_CD' AND screen-input <> '0'.
+      screen-input = '0'.
+    ENDIF.
+
+    IF i_open = abap_true.
+      IF screen-name = 'P_O_OPNK'.
+        screen-input = '1'.
+      ELSEIF    screen-name = 'P_C_OPNK'
+             OR screen-name = 'S_CL_DAT-HIGH'
+             OR screen-name = 'S_CL_DAT-LOW'.
+        screen-input = '0'.
+      ELSEIF    screen-name = 'S_PS_DAT-HIGH'
+             OR screen-name = 'S_PS_DAT-LOW'.
+        screen-input = '0'.
+      ENDIF.
+
+    ELSEIF i_clear = abap_true.
+      IF screen-name = 'P_O_OPNK'.
+        screen-input = '0'.
+      ELSEIF    screen-name = 'P_C_OPNK'
+             OR screen-name = 'S_CL_DAT-HIGH'
+             OR screen-name = 'S_CL_DAT-LOW'.
+        screen-input = '1'.
+      ELSEIF    screen-name = 'S_PS_DAT-HIGH'
+             OR screen-name = 'S_PS_DAT-LOW'.
+        screen-input = '0'.
+      ENDIF.
+
+    ELSEIF i_all = abap_true.
+      IF screen-name = 'P_O_OPNK'.
+        screen-input = '0'.
+      ELSEIF    screen-name = 'P_C_OPNK'
+             OR screen-name = 'S_CL_DAT-HIGH'
+             OR screen-name = 'S_CL_DAT-LOW'.
+        screen-input = '0'.
+      ELSEIF    screen-name = 'S_PS_DAT-HIGH'
+             OR screen-name = 'S_PS_DAT-LOW'.
+        screen-input = '1'.
+      ENDIF.
+    ENDIF.
+    MODIFY SCREEN.
+  ENDLOOP.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*& Form GET_GL_ACC
+*&---------------------------------------------------------------------*
+*& Get G/L Account for Validation
+*&---------------------------------------------------------------------*
+*&      --> I_GL_ACC
+*&      --> I_T_GL_ACC
+*&      --> U_FLAG
+*&---------------------------------------------------------------------*
+FORM get_gl_acc USING i_gl_acc TYPE hkont
+                      i_t_gl_acc TYPE ty_t_gl_acc
+                CHANGING u_flag TYPE char1.
+  LOOP AT i_t_gl_acc INTO DATA(lv_hkont).
+    IF i_gl_acc CS '*' OR i_gl_acc CS '+' . " Contains Pattern
+      CALL FUNCTION 'CONVERSION_EXIT_ALPHA_OUTPUT'
+        EXPORTING
+          input  = lv_hkont
+        IMPORTING
+          output = lv_hkont.
+
+      IF lv_hkont CP i_gl_acc.
+        u_flag = abap_true.
+        EXIT.
+      ENDIF.
+    ELSEIF lv_hkont = i_gl_acc. " Normal Search
+      u_flag = abap_true.
+      EXIT.
+    ENDIF.
+  ENDLOOP.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*& Form GET_CUS_CD
+*&---------------------------------------------------------------------*
+*& Get Customer Number for Validation
+*&---------------------------------------------------------------------*
+*&      --> I_CUS_CD
+*&      --> I_T_CUS_CD
+*&      --> U_FLAG
+*&---------------------------------------------------------------------*
+FORM get_cus_cd USING i_cus_cd TYPE kunnr
+                      i_t_cus_cd TYPE ty_t_cus_cd
+                CHANGING u_flag TYPE char1.
+  LOOP AT i_t_cus_cd INTO DATA(lv_kunnr).
+    IF i_cus_cd CS '*' OR i_cus_cd CS '+' . " Contains Pattern
+      CALL FUNCTION 'CONVERSION_EXIT_ALPHA_OUTPUT'
+        EXPORTING
+          input  = lv_kunnr
+        IMPORTING
+          output = lv_kunnr.
+
+      IF lv_kunnr CP i_cus_cd.
+        u_flag = abap_true.
+        EXIT.
+      ENDIF.
+    ELSEIF lv_kunnr = i_cus_cd. " Normal Search
+      u_flag = abap_true.
+      EXIT.
+    ENDIF.
+  ENDLOOP.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*& Form VALIDATE_GL_ACC
+*&---------------------------------------------------------------------*
+*& Validate G/L Account Select Option
+*&---------------------------------------------------------------------*
+*&      --> I_GL_ACC
+*&---------------------------------------------------------------------*
+FORM validate_gl_acc USING i_gl_acc TYPE ty_gl_acc
+                           i_t_cus_cd TYPE ty_t_cus_cd.
+  DATA: lv_flag   TYPE char1 VALUE abap_false,
+        ls_gl_acc LIKE LINE OF i_gl_acc.
+  IF lines( i_gl_acc ) <= 0.
+    RETURN.
+  ELSE.
+    READ TABLE i_gl_acc INTO ls_gl_acc INDEX 1.
+  ENDIF.
+
+  IF ls_gl_acc-low IS NOT INITIAL.
+    PERFORM get_gl_acc USING ls_gl_acc-low
+                             i_t_cus_cd
+                       CHANGING lv_flag.
+
+    IF lv_flag <> abap_true.
+      MESSAGE s013(z03_s40_205_msgs) WITH TEXT-008 ls_gl_acc-low
+      p_cmp_cd DISPLAY LIKE 'E'.
+
+      IF sy-batch = abap_false.
+        IF sy-ucomm <> 'NONE' AND sy-ucomm <> 'ACPT'.
+          LEAVE LIST-PROCESSING.
+        ENDIF.
+
+      ELSE.
+        LEAVE SCREEN.
+
+      ENDIF.
+    ELSE.
+      lv_flag = abap_false.
+    ENDIF.
+  ENDIF.
+
+  IF ls_gl_acc-high IS NOT INITIAL.
+    PERFORM get_gl_acc USING ls_gl_acc-high
+                             i_t_cus_cd
+                       CHANGING lv_flag.
+
+    IF lv_flag <> abap_true.
+      MESSAGE s013(z03_s40_205_msgs) WITH TEXT-008 ls_gl_acc-high
+      p_cmp_cd DISPLAY LIKE 'E'.
+
+      IF sy-batch = abap_false.
+        IF sy-ucomm <> 'NONE' AND sy-ucomm <> 'ACPT'.
+          LEAVE LIST-PROCESSING.
+        ENDIF.
+
+      ELSE.
+        LEAVE SCREEN.
+
+      ENDIF.
+    ELSE.
+      lv_flag = abap_false.
+    ENDIF.
+  ENDIF.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*& Form VALIDATE_MULTI_GL_ACC
+*&---------------------------------------------------------------------*
+*& Validate G/L Account Multiple Select Option
+*&---------------------------------------------------------------------*
+*&      --> I_GL_ACC
+*&---------------------------------------------------------------------*
+FORM validate_multi_gl_acc USING i_gl_acc TYPE ty_gl_acc
+                                 i_t_cus_cd TYPE ty_t_cus_cd.
+  IF lines( i_gl_acc ) <= 0.
+    RETURN.
+  ENDIF.
+  IF sy-ucomm <> 'NONE' AND sy-ucomm <> 'ACPT'.
+    RETURN.
+  ENDIF.
+
+  DATA: lv_flag TYPE char1 VALUE abap_false.
+
+  LOOP AT i_gl_acc INTO DATA(ls_gl_acc).
+    IF ls_gl_acc-low IS NOT INITIAL.
+      IF ls_gl_acc-option <> 'CP'.
+        PERFORM get_gl_acc USING ls_gl_acc-low
+                                 i_t_cus_cd
+                           CHANGING lv_flag.
+        IF lv_flag <> abap_true.
+          MESSAGE e013(z03_s40_205_msgs) WITH TEXT-008 ls_gl_acc-low
+          p_cmp_cd.
+        ELSE.
+          lv_flag = abap_false.
+        ENDIF.
+      ENDIF.
+    ENDIF.
+
+    IF ls_gl_acc-high IS NOT INITIAL.
+      PERFORM get_gl_acc USING ls_gl_acc-high
+                               i_t_cus_cd
+                         CHANGING lv_flag.
+
+      IF lv_flag <> abap_true.
+        MESSAGE e013(z03_s40_205_msgs) WITH TEXT-008 ls_gl_acc-high
+        p_cmp_cd.
+      ELSE.
+        lv_flag = abap_false.
+      ENDIF.
+    ENDIF.
+  ENDLOOP.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*& Form VALIDATE_CUS_CD
+*&---------------------------------------------------------------------*
+*& Validate Customer Code Select Option
+*&---------------------------------------------------------------------*
+*&      --> I_CUS_CD
+*&---------------------------------------------------------------------*
+FORM validate_cus_cd USING i_cus_cd TYPE ty_cus_cd
+                           i_t_cus_cd TYPE ty_t_cus_cd.
+  " If empty, get all; if not, check if it's SFPT customer
+  DATA: lv_flag   TYPE char1 VALUE abap_false,
+        ls_cus_cd LIKE LINE OF i_cus_cd.
+  IF lines( i_cus_cd ) <= 0.
+    RETURN.
+  ELSE.
+    READ TABLE i_cus_cd INTO ls_cus_cd INDEX 1.
+  ENDIF.
+
+  IF ls_cus_cd-low IS NOT INITIAL.
+    PERFORM get_cus_cd USING ls_cus_cd-low i_t_cus_cd
+                            CHANGING lv_flag.
+
+    IF lv_flag <> abap_true.
+      MESSAGE s013(z03_s40_205_msgs) WITH TEXT-016 ls_cus_cd-low
+      p_cmp_cd DISPLAY LIKE 'E'.
+
+      IF sy-batch = abap_false.
+        IF sy-ucomm <> 'NONE' AND sy-ucomm <> 'ACPT'.
+          LEAVE LIST-PROCESSING.
+        ENDIF.
+
+      ELSE.
+        LEAVE SCREEN.
+
+      ENDIF.
+    ELSE.
+      lv_flag = abap_false.
+    ENDIF.
+  ENDIF.
+
+  IF ls_cus_cd-high IS NOT INITIAL.
+    PERFORM get_cus_cd USING ls_cus_cd-high i_t_cus_cd
+                            CHANGING lv_flag.
+
+    IF lv_flag <> abap_true.
+      MESSAGE s013(z03_s40_205_msgs) WITH TEXT-016 ls_cus_cd-high
+      p_cmp_cd DISPLAY LIKE 'E'.
+
+      IF sy-batch = abap_false.
+        IF sy-ucomm <> 'NONE' AND sy-ucomm <> 'ACPT'.
+          LEAVE LIST-PROCESSING.
+        ENDIF.
+
+      ELSE.
+        LEAVE SCREEN.
+
+      ENDIF.
+    ELSE.
+      lv_flag = abap_false.
+    ENDIF.
+  ENDIF.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*& Form VALIDATE_MULTI_CUS_CD
+*&---------------------------------------------------------------------*
+*& Validate Customer Code Multiple Select Option
+*&---------------------------------------------------------------------*
+*&      --> I_CUS_CD
+*&---------------------------------------------------------------------*
+FORM validate_multi_cus_cd USING i_cus_cd TYPE ty_cus_cd
+                                 i_t_cus_cd TYPE ty_t_cus_cd.
+  " If empty, get all; if not, check if it's SFPT customer
+  IF lines( s_cus_cd ) <= 0.
+    RETURN.
+  ENDIF.
+  IF sy-ucomm <> 'NONE' AND sy-ucomm <> 'ACPT'.
+    RETURN.
+  ENDIF.
+
+  DATA: lv_flag TYPE char1 VALUE abap_false.
+
+  LOOP AT i_cus_cd INTO DATA(ls_cus_cd).
+
+    IF ls_cus_cd-low IS NOT INITIAL.
+      IF ls_cus_cd-option <> 'CP'.
+        PERFORM get_cus_cd USING ls_cus_cd-low i_t_cus_cd
+                                CHANGING lv_flag.
+
+        IF lv_flag <> abap_true.
+          MESSAGE e013(z03_s40_205_msgs) WITH TEXT-016 ls_cus_cd-low
+          p_cmp_cd.
+        ELSE.
+          lv_flag = abap_false.
+        ENDIF.
+      ENDIF.
+    ENDIF.
+
+    IF ls_cus_cd-high IS NOT INITIAL.
+      PERFORM get_cus_cd USING ls_cus_cd-high i_t_cus_cd
+                              CHANGING lv_flag.
+
+      IF lv_flag <> abap_true.
+        MESSAGE e013(z03_s40_205_msgs) WITH TEXT-016 ls_cus_cd-high
+        p_cmp_cd.
+      ELSE.
+        lv_flag = abap_false.
+      ENDIF.
+    ENDIF.
+  ENDLOOP.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*& Form VALIDATE_TYPE_CB
+*&---------------------------------------------------------------------*
+*& Validate type checkboxes
+*&---------------------------------------------------------------------*
+FORM validate_type_cb.
+  " Check if at least 1 CB is toggled
+  IF cb_norm <> abap_true AND cb_spec <> abap_true AND cb_note <>
+                abap_true.
+    MESSAGE s003(z03_s40_205_msgs) WITH TEXT-034 DISPLAY LIKE 'E'.
+    LEAVE LIST-PROCESSING.
+  ENDIF.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*& Form VALIDATE_REQUIRED_FIELDS
+*&---------------------------------------------------------------------*
+*& Validate required fields are all filled
+*&---------------------------------------------------------------------*
+FORM validate_required_fields.
+  " If empty, return error
+  IF lines( s_gl_acc ) <= 0.
+    SET CURSOR FIELD 'S_GL_ACC-LOW'.
+    MESSAGE s003(z03_s40_205_msgs) WITH TEXT-008 DISPLAY LIKE 'E'.
+    LEAVE LIST-PROCESSING.
+  ENDIF.
+
+  " Check for at least 1 non-empty line
+  DATA: lv_flag TYPE char1 VALUE abap_false.
+
+  LOOP AT s_gl_acc INTO DATA(ls_gl_acc).
+    IF ls_gl_acc-low IS NOT INITIAL OR ls_gl_acc-high IS NOT INITIAL.
+      lv_flag = abap_true.
+      EXIT.
+    ENDIF.
+  ENDLOOP.
+
+  IF lv_flag <> abap_true.
+    SET CURSOR FIELD 'S_GL_ACC-LOW'.
+    MESSAGE s014(z03_s40_205_msgs) WITH TEXT-008 DISPLAY LIKE 'E'.
+    LEAVE LIST-PROCESSING.
+  ENDIF.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*& Database Access
+*&---------------------------------------------------------------------*
+*&---------------------------------------------------------------------*
+*& Form GENERATE_OUTPUT_TABLE
+*&---------------------------------------------------------------------*
+*& Use the input item to generate an output table for ALV form
+*&---------------------------------------------------------------------*
+*&      --> I_INPUT
+*&      <-- C_T_GL_ITEM_OUTPUT
+*&---------------------------------------------------------------------*
+FORM query_output_table USING    i_input           TYPE ty_gl_item_inp
+                        CHANGING ct_gl_item_output TYPE ty_t_gl_item_out
+                        .
+
+  CLEAR ct_gl_item_output.
+
+  IF i_input-status-open = abap_true OR i_input-status-all = abap_true.
+    PERFORM query_open_items USING    i_input
+                             CHANGING ct_gl_item_output.
+  ENDIF.
+  IF i_input-status-cleared = abap_true OR i_input-status-all =
+                              abap_true.
+    PERFORM query_cleared_items USING    i_input
+                                CHANGING ct_gl_item_output.
+  ENDIF.
+
+  DATA lv_num_lines TYPE i.
+  lv_num_lines = lines( ct_gl_item_output ).
+  IF lv_num_lines <= 0.
+    MESSAGE s008(z03_s40_205_msgs) DISPLAY LIKE 'E'.
+    LEAVE LIST-PROCESSING.
+  ELSE.
+    PERFORM prepare_output_table CHANGING ct_gl_item_output.
+    MESSAGE s036(z03_s40_205_msgs) WITH lv_num_lines.
+  ENDIF.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*& Form QUERY_OPEN_ITEMS
+*&---------------------------------------------------------------------*
+*& Get data from BSID
+*&---------------------------------------------------------------------*
+*&      --> I_INPUT
+*&      <-- C_T_GL_ITEM_OUTPUT
+*&---------------------------------------------------------------------*
+FORM query_open_items USING    i_input           TYPE ty_gl_item_inp
+                      CHANGING ct_gl_item_output TYPE ty_t_gl_item_out.
+
+  CONSTANTS lc_date TYPE dztage VALUE 000.
+  CONSTANTS lc_tax  TYPE char2  VALUE '3%'.
+  DATA lv_icon TYPE char11.
+
+  lv_icon = TEXT-040.
+
+  IF i_input-gl_type_norm = abap_true.
+    SELECT @abap_false AS select_box,
+           @lv_icon    AS status,
+           b~kunnr     AS cust_num,
+           b~hkont     AS gl_acc,
+           b~belnr     AS doc_num,
+           e~prctr     AS prof_cent,
+           k~blart     AS doc_type,
+           k~budat     AS post_date,
+           k~bldat     AS doc_date,
+           b~zfbdt     AS due_date,
+           0           AS day_overdue,
+           b~wrbtr     AS amount,
+           b~rfccur    AS curr,
+           b~augdt     AS clear_date,
+           b~zterm     AS pay_opt,
+           @lc_date    AS over_days,
+           b~shkzg     AS dc_ind,
+           b~augbl     AS clear_doc,
+           n~name1     AS cust_name,
+           b~gjahr     AS fis_year,
+           b~sgtxt     AS text,
+           @space      AS gl_name,
+           b~buzei     AS item_num,
+           b~auggj     AS clear_year
+      FROM bsid_view AS b
+             INNER JOIN
+               bkpf AS k ON  b~bukrs = k~bukrs
+                         AND b~belnr = k~belnr
+                         AND b~gjahr = k~gjahr
+                 INNER JOIN
+                   bseg AS e ON  b~bukrs = e~bukrs
+                             AND b~belnr = e~belnr
+                             AND b~gjahr = e~gjahr
+                             AND e~koart = 'S'
+                     INNER JOIN
+                       kna1 AS n ON n~kunnr = b~kunnr
+      WHERE b~bukrs               = @p_cmp_cd
+        AND ltrim( b~kunnr, '0' ) IN @i_input-cust_num_range
+        AND b~budat               IN @i_input-pst_dat
+        AND ltrim( b~hkont, '0' ) IN @i_input-gl_acc_range
+        AND b~umskz               IS INITIAL
+        AND e~buzid               IS INITIAL
+        AND e~hkont               NOT LIKE @lc_tax
+        AND e~prctr               IN @i_input-prof_cent
+      APPENDING TABLE @ct_gl_item_output.
+  ENDIF.
+
+  IF lines( i_input-gl_type ) > 0.
+    SELECT @abap_false AS select_box,
+           @lv_icon    AS status,
+           b~kunnr     AS cust_num,
+           b~hkont     AS gl_acc,
+           b~belnr     AS doc_num,
+           b~prctr     AS prof_cent,
+           k~blart     AS doc_type,
+           k~budat     AS post_date,
+           k~bldat     AS doc_date,
+           b~zfbdt     AS due_date,
+           0           AS day_overdue,
+           b~wrbtr     AS amount,
+           b~rfccur    AS curr,
+           b~augdt     AS clear_date,
+           b~zterm     AS pay_opt,
+           @lc_date    AS over_days,
+           b~shkzg     AS dc_ind,
+           b~augbl     AS clear_doc,
+           n~name1     AS cust_name,
+           b~gjahr     AS fis_year,
+           b~sgtxt     AS text,
+           @space      AS gl_name,
+           b~buzei     AS item_num,
+           b~auggj     AS clear_year
+      FROM bsid_view AS b
+             INNER JOIN
+               bkpf AS k ON  b~bukrs = k~bukrs
+                         AND b~belnr = k~belnr
+                         AND b~gjahr = k~gjahr
+                 INNER JOIN
+                   kna1 AS n ON n~kunnr = b~kunnr
+      WHERE b~bukrs  = @p_cmp_cd
+        AND ltrim( b~kunnr, '0' ) IN @i_input-cust_num_range
+        AND b~budat               IN @i_input-pst_dat
+        AND ltrim( b~hkont, '0' ) IN @i_input-gl_acc_range
+        AND b~prctr IN @i_input-prof_cent
+        AND b~umskz IN @i_input-gl_type
+        AND b~blart <> 'AB'
+      APPENDING TABLE @ct_gl_item_output.
+  ENDIF.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*& Form QUERY_CLEARED_ITEMS
+*&---------------------------------------------------------------------*
+*& Get data from BSAD
+*&---------------------------------------------------------------------*
+*&      --> I_INPUT
+*&      <-- C_T_GL_ITEM_OUTPUT
+*&---------------------------------------------------------------------*
+FORM query_cleared_items USING    i_input           TYPE ty_gl_item_inp
+                         CHANGING ct_gl_item_output TYPE
+                         ty_t_gl_item_out.
+
+  DATA lt_norm_item TYPE STANDARD TABLE OF ty_gl_item_out WITH KEY
+  doc_num fis_year item_num.
+  DATA lt_spec_item TYPE STANDARD TABLE OF ty_gl_item_out WITH KEY
+  doc_num fis_year item_num.
+
+  DATA ls_item      LIKE LINE OF ct_gl_item_output.
+
+  FIELD-SYMBOLS <lfs_item> LIKE LINE OF ct_gl_item_output.
+
+  CONSTANTS lc_date TYPE dztage VALUE 000.
+  CONSTANTS lc_tax  TYPE char2  VALUE '3%'.
+
+  DATA lv_icon TYPE char11.
+
+  lv_icon = TEXT-041.
+
+  IF i_input-gl_type_norm = abap_true.
+    SELECT @abap_false AS select_box,
+           @lv_icon    AS status,
+           b~kunnr     AS cust_num,
+           b~hkont     AS gl_acc,
+           b~belnr     AS doc_num,
+           e~prctr     AS prof_cent,
+           k~blart     AS doc_type,
+           k~budat     AS post_date,
+           k~bldat     AS doc_date,
+           b~zfbdt     AS due_date,
+           0           AS day_overdue,
+           b~wrbtr     AS amount,
+           b~rfccur    AS curr,
+           b~augdt     AS clear_date,
+           b~zterm     AS pay_opt,
+           @lc_date    AS over_days,
+           b~shkzg     AS dc_ind,
+           b~augbl     AS clear_doc,
+           n~name1     AS cust_name,
+           b~gjahr     AS fis_year,
+           b~sgtxt     AS text,
+           @space      AS gl_name,
+           b~buzei     AS item_num,
+           b~auggj     AS clear_year
+      FROM bsad_view AS b
+             INNER JOIN
+               bkpf AS k ON  b~bukrs = k~bukrs
+                         AND b~belnr = k~belnr
+                         AND b~gjahr = k~gjahr
+                 INNER JOIN
+                   bseg AS e ON  b~bukrs = e~bukrs
+                             AND e~koart = 'S'
+                             AND b~belnr = e~belnr
+                             AND b~gjahr = e~gjahr
+                     INNER JOIN
+                       kna1 AS n ON n~kunnr = b~kunnr
+      WHERE b~bukrs        = @p_cmp_cd
+        AND ltrim( b~kunnr, '0' ) IN @i_input-cust_num_range
+        AND b~budat               IN @i_input-pst_dat
+        AND ltrim( b~hkont, '0' ) IN @i_input-gl_acc_range
+        AND b~augdt       IN @i_input-clr_dat
+        AND b~umskz       IS INITIAL
+        AND e~prctr       IN @i_input-prof_cent
+        AND e~buzid       IS INITIAL
+        AND e~hkont NOT LIKE @lc_tax
+      INTO TABLE @lt_norm_item.
+  ENDIF.
+
+  IF lines( i_input-gl_type ) > 0.
+    SELECT @abap_false AS select_box,
+           @lv_icon    AS status,
+           b~kunnr     AS cust_num,
+           b~hkont     AS gl_acc,
+           b~belnr     AS doc_num,
+           b~prctr     AS prof_cent,
+           k~blart     AS doc_type,
+           k~budat     AS post_date,
+           k~bldat     AS doc_date,
+           b~zfbdt     AS due_date,
+           0           AS day_overdue,
+           b~wrbtr     AS amount,
+           b~rfccur    AS curr,
+           b~augdt     AS clear_date,
+           b~zterm     AS pay_opt,
+           @lc_date    AS over_days,
+           b~shkzg     AS dc_ind,
+           b~augbl     AS clear_doc,
+           n~name1     AS cust_name,
+           b~gjahr     AS fis_year,
+           b~sgtxt     AS text,
+           @space      AS gl_name,
+           b~buzei     AS item_num,
+           b~auggj     AS clear_year
+      FROM bsad_view AS b
+             INNER JOIN
+               bkpf AS k ON  b~bukrs = k~bukrs
+                         AND b~belnr = k~belnr
+                         AND b~gjahr = k~gjahr
+                 INNER JOIN
+                   kna1 AS n ON n~kunnr = b~kunnr
+      WHERE b~bukrs  = @p_cmp_cd
+        AND ltrim( b~kunnr, '0' ) IN @i_input-cust_num_range
+        AND b~budat               IN @i_input-pst_dat
+        AND ltrim( b~hkont, '0' ) IN @i_input-gl_acc_range
+        AND b~augdt       IN @i_input-clr_dat
+        AND b~prctr IN @i_input-prof_cent
+        AND b~umskz IN @i_input-gl_type
+      INTO TABLE @lt_spec_item.
+  ENDIF.
+
+  IF lines( lt_norm_item ) > 0.
+    SELECT DISTINCT b~kunnr  AS cust_num,
+                    b~hkont  AS gl_acc,
+                    b~belnr  AS doc_num,
+                    b~prctr  AS prof_cent,
+                    k~blart  AS doc_type,
+                    k~budat  AS post_date,
+                    k~bldat  AS doc_date,
+                    b~zfbdt  AS due_date,
+                    b~wrbtr  AS amount,
+                    b~rfccur AS curr,
+                    b~augdt  AS clear_date,
+                    b~zterm  AS pay_opt,
+                    b~shkzg  AS dc_ind,
+                    b~augbl  AS clear_doc,
+                    n~name1  AS cust_name,
+                    b~gjahr  AS fis_year,
+                    b~sgtxt  AS text,
+                    b~buzei  AS item_num,
+                    b~auggj  AS clear_year
+      FROM bsad_view AS b
+             INNER JOIN
+               bkpf AS k ON  b~bukrs = k~bukrs
+                         AND b~belnr = k~belnr
+                         AND b~gjahr = k~gjahr
+                 INNER JOIN
+                   kna1 AS n ON n~kunnr = b~kunnr
+      FOR ALL ENTRIES IN @lt_norm_item
+      WHERE b~bukrs  = @p_cmp_cd
+        AND ltrim( b~kunnr, '0' ) IN @i_input-cust_num_range
+        AND b~budat               IN @i_input-pst_dat
+        AND ltrim( b~hkont, '0' ) IN @i_input-gl_acc_range
+        AND b~augdt       IN @i_input-clr_dat
+        AND b~auggj  = @lt_norm_item-clear_year
+        AND b~belnr <> @lt_norm_item-doc_num
+        AND b~augbl  = @lt_norm_item-clear_doc
+        AND b~umskz IS INITIAL
+      INTO TABLE @DATA(lt_clr_norm).
+
+    LOOP AT lt_clr_norm ASSIGNING FIELD-SYMBOL(<ls_clr_norm>).
+      MOVE-CORRESPONDING <ls_clr_norm> TO ls_item.
+      ls_item-status = lv_icon.
+      APPEND ls_item TO ct_gl_item_output.
+      CLEAR ls_item.
+    ENDLOOP.
+  ENDIF.
+
+  IF lines( lt_spec_item ) > 0.
+    SELECT DISTINCT b~kunnr  AS cust_num,
+                    b~hkont  AS gl_acc,
+                    b~belnr  AS doc_num,
+                    b~prctr  AS prof_cent,
+                    k~blart  AS doc_type,
+                    k~budat  AS post_date,
+                    k~bldat  AS doc_date,
+                    b~zfbdt  AS due_date,
+                    b~wrbtr  AS amount,
+                    b~rfccur AS curr,
+                    b~augdt  AS clear_date,
+                    b~zterm  AS pay_opt,
+                    b~shkzg  AS dc_ind,
+                    b~augbl  AS clear_doc,
+                    n~name1  AS cust_name,
+                    b~gjahr  AS fis_year,
+                    b~sgtxt  AS text,
+                    b~buzei  AS item_num,
+                    b~auggj  AS clear_year
+      FROM bsad_view AS b
+             INNER JOIN
+               bkpf AS k ON  b~bukrs = k~bukrs
+                         AND b~belnr = k~belnr
+                         AND b~gjahr = k~gjahr
+                 INNER JOIN
+                   kna1 AS n ON n~kunnr = b~kunnr
+      FOR ALL ENTRIES IN @lt_spec_item
+      WHERE b~bukrs  = @p_cmp_cd
+        AND ltrim( b~kunnr, '0' ) IN @i_input-cust_num_range
+        AND b~budat               IN @i_input-pst_dat
+        AND ltrim( b~hkont, '0' ) IN @i_input-gl_acc_range
+        AND b~augdt       IN @i_input-clr_dat
+        AND b~prctr IN @i_input-prof_cent
+        AND b~auggj  = @lt_spec_item-clear_year
+        AND b~belnr <> @lt_spec_item-doc_num
+        AND ( b~augbl = @lt_spec_item-clear_doc OR b~belnr =
+                        @lt_spec_item-clear_doc )
+        AND b~umskz IN @i_input-gl_type
+      INTO TABLE @DATA(lt_spc_norm).
+
+    LOOP AT lt_spc_norm ASSIGNING FIELD-SYMBOL(<ls_spc_norm>).
+      MOVE-CORRESPONDING <ls_spc_norm> TO ls_item.
+      ls_item-status = lv_icon.
+      APPEND ls_item TO ct_gl_item_output.
+      CLEAR ls_item.
+    ENDLOOP.
+  ENDIF.
+
+  " No inserting repeated items
+  LOOP AT lt_norm_item ASSIGNING <lfs_item>.
+    IF NOT line_exists( ct_gl_item_output[ doc_num  = <lfs_item>-doc_num
+                                           fis_year =
+                                           <lfs_item>-fis_year
+                                           item_num =
+                                           <lfs_item>-item_num ] ).
+      APPEND <lfs_item> TO ct_gl_item_output.
+    ENDIF.
+  ENDLOOP.
+
+  LOOP AT lt_spec_item ASSIGNING <lfs_item>.
+    IF NOT line_exists( ct_gl_item_output[ doc_num  = <lfs_item>-doc_num
+                                           fis_year =
+                                           <lfs_item>-fis_year
+                                           item_num =
+                                           <lfs_item>-item_num ] ).
+      APPEND <lfs_item> TO ct_gl_item_output.
+    ENDIF.
+  ENDLOOP.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*& Form QUERY_HEADER_DATA
+*&---------------------------------------------------------------------*
+*& Get header data for display in SmartForm
+*&---------------------------------------------------------------------*
+*&      --> I_COMP_CODE
+*&      <-- C_HEAD_DATA
+*&---------------------------------------------------------------------*
+FORM query_header_data USING    i_comp_code TYPE bukrs
+                       CHANGING c_head_data TYPE
+                       z03_s40_zss24_header_data.
+
+  CONSTANTS lc_date TYPE dats  VALUE '00010101'.
+  CONSTANTS lc_sep  TYPE char2 VALUE ', '.
+  DATA lv_address_string TYPE zde03_s40_comp_adr.
+  DATA lv_tax_code       TYPE zde03_s40_comp_txcod.
+
+  " Assemble data into fields
+  SELECT SINGLE bukrs, butxt, land1, adrnr, spras
+    FROM t001
+    WHERE t001~bukrs = @i_comp_code
+    INTO @DATA(ls_company).
+
+  SELECT SINGLE addrnumber, street, city1, po_box, tel_number, date_from
+  , nation
+    FROM adrc
+    WHERE @ls_company-adrnr  = adrc~addrnumber
+      AND adrc~date_from     = @lc_date
+      AND adrc~nation       IS INITIAL
+    INTO @DATA(ls_address).
+
+  SELECT SINGLE landx, land1, spras
+    FROM t005t
+    WHERE t005t~land1 = @ls_company-land1
+      AND t005t~spras = @ls_company-spras
+    INTO @DATA(ls_country).
+
+  lv_tax_code = ls_address-po_box.
+
+  " Assemble address info
+  IF ls_address-street IS NOT INITIAL.
+    lv_address_string = ls_address-street.
+  ENDIF.
+  IF ls_address-city1 IS NOT INITIAL.
+    CONCATENATE lv_address_string ls_address-city1 INTO
+    lv_address_string SEPARATED BY lc_sep.
+  ENDIF.
+  IF ls_country-land1 IS NOT INITIAL.
+    CONCATENATE lv_address_string ls_country-landx INTO
+    lv_address_string SEPARATED BY lc_sep.
+  ENDIF.
+
+  " Assemble comp info
+  c_head_data-comp_name  = ls_company-butxt.
+  c_head_data-comp_phone = ls_address-tel_number.
+  c_head_data-comp_txcod = lv_tax_code.
+  c_head_data-comp_adr   = lv_address_string.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*& Form QUERY_VALIDATION_DATA
+*&---------------------------------------------------------------------*
+*& Get data for report validation
+*&---------------------------------------------------------------------*
+*&      --> I_COMP_CODE
+*&      <-- C_T_GL_ACC
+*&      <-- C_T_CUS_CD
+*&---------------------------------------------------------------------*
+FORM query_validation_data USING    i_comp_code TYPE bukrs
+                           CHANGING c_t_cus_cd TYPE ty_t_cus_cd
+                                    c_t_gl_acc TYPE ty_t_gl_acc.
+  SELECT saknr
+    FROM skb1
+    WHERE bukrs = @i_comp_code
+    INTO TABLE @c_t_gl_acc. " Only once per program
+
+  IF sy-subrc <> 0.
+    MESSAGE s001(z03_s40_205_msgs) WITH TEXT-008 DISPLAY LIKE 'E'.
+    LEAVE SCREEN.
+  ELSE.
+    SORT c_t_gl_acc.
+  ENDIF.
+
+  SELECT kunnr
+    FROM knb1
+    WHERE bukrs = @i_comp_code
+    INTO TABLE @c_t_cus_cd.
+
+  IF sy-subrc <> 0.
+    MESSAGE s001(z03_s40_205_msgs) WITH TEXT-016 DISPLAY LIKE 'E'.
+    LEAVE SCREEN.
+  ELSE.
+    SORT c_t_cus_cd.
+  ENDIF.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*& Form PREPARE_OUTPUT_TABLE
+*&---------------------------------------------------------------------*
+*& Modify table data for display
+*&---------------------------------------------------------------------*
+*&      <-- C_T_GL_ITEM_OUTPUT
+*&---------------------------------------------------------------------*
+FORM prepare_output_table CHANGING ct_gl_item_output TYPE
+ty_t_gl_item_out.
+  FIELD-SYMBOLS <lfs_item> LIKE LINE OF ct_gl_item_output.
+
+  IF lines( ct_gl_item_output ) <= 0.
+    RETURN.
+  ENDIF.
+
+  SELECT a~zterm,
+         a~ztag3,
+         a~ztagg
+    FROM t052 AS a
+    FOR ALL ENTRIES IN @ct_gl_item_output
+    WHERE a~zterm = @ct_gl_item_output-pay_opt
+    INTO TABLE @DATA(lt_pay_term).
+
+  SORT lt_pay_term BY zterm
+                      ztagg DESCENDING.
+  DELETE ADJACENT DUPLICATES FROM lt_pay_term COMPARING zterm.
+  " remove all non-highest zterm
+
+  LOOP AT ct_gl_item_output ASSIGNING <lfs_item>.
+    " Adjust amount to Document type
+    IF <lfs_item>-dc_ind = 'H'.
+      <lfs_item>-amount *= -1.
+    ENDIF.
+
+    " Add Pay Opt and Over Days
+    READ TABLE lt_pay_term INTO DATA(ls_pay_term) WITH KEY zterm =
+    <lfs_item>-pay_opt.
+    IF sy-subrc = 0.
+      <lfs_item>-over_days = ls_pay_term-ztag3.
+    ENDIF.
+
+    IF <lfs_item>-due_date IS NOT INITIAL.
+      <lfs_item>-due_date += <lfs_item>-over_days.
+    ELSE.
+      <lfs_item>-due_date = <lfs_item>-doc_date +
+      <lfs_item>-over_days.
+    ENDIF.
+
+    " Set Days overdue
+    IF <lfs_item>-clear_date IS INITIAL.
+      DATA lv_days TYPE p0347-scrdd.
+
+      IF sy-datum > <lfs_item>-due_date.
+        CALL FUNCTION 'HR_HK_DIFF_BT_2_DATES'
+          EXPORTING
+            date1         = sy-datum
+            date2         = <lfs_item>-due_date
+            output_format = '02'
+          IMPORTING
+            days          = lv_days.
+        <lfs_item>-day_overdue = lv_days - 1.
+      ENDIF.
+    ENDIF.
+
+    " Convert output
+    CALL FUNCTION 'CONVERSION_EXIT_ALPHA_OUTPUT'
+      EXPORTING
+        input  = <lfs_item>-cust_num
+      IMPORTING
+        output = <lfs_item>-cust_num.
+
+    CALL FUNCTION 'CONVERSION_EXIT_ALPHA_OUTPUT'
+      EXPORTING
+        input  = <lfs_item>-gl_acc
+      IMPORTING
+        output = <lfs_item>-gl_acc.
+
+    CALL FUNCTION 'CONVERSION_EXIT_ALPHA_OUTPUT'
+      EXPORTING
+        input  = <lfs_item>-doc_num
+      IMPORTING
+        output = <lfs_item>-doc_num.
+
+    CALL FUNCTION 'CONVERSION_EXIT_ALPHA_OUTPUT'
+      EXPORTING
+        input  = <lfs_item>-clear_doc
+      IMPORTING
+        output = <lfs_item>-clear_doc.
+  ENDLOOP.
+
+  SORT ct_gl_item_output BY cust_num
+                            doc_num.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*& ALV Table rendering
+*&---------------------------------------------------------------------*
+*&---------------------------------------------------------------------*
+*& Form GENERATE_ALV
+*&---------------------------------------------------------------------*
+*& Generate ALV form
+*&---------------------------------------------------------------------*
+*&      --> GT_GL_ITEM_OUTPUT
+*&---------------------------------------------------------------------*
+FORM generate_alv USING i_t_gl_item_output TYPE ty_t_gl_item_out.
+  DATA gc_html_height_top TYPE i VALUE 20.
+  DATA lt_field_cat       TYPE slis_t_fieldcat_alv.
+  DATA ls_layout          TYPE slis_layout_alv.
+  DATA lt_sort            TYPE slis_t_sortinfo_alv.
+
+  " Prepare layout
+  PERFORM prepare_layout CHANGING ls_layout.
+
+  " Prepare field catalog
+  PERFORM prepare_field_cat CHANGING lt_field_cat.
+
+  " Prepare sorting options
+  SORT i_t_gl_item_output BY cust_num
+                             post_date
+                             doc_num.
+  PERFORM prepare_sort CHANGING lt_sort.
+
+  CALL FUNCTION 'REUSE_ALV_GRID_DISPLAY'
+    EXPORTING
+      is_layout                = ls_layout
+      it_fieldcat              = lt_field_cat
+      it_sort                  = lt_sort
+      i_callback_program       = sy-repid
+      i_callback_top_of_page   = 'ALV_HEADER'
+      i_callback_user_command  = 'HANDLE_USER_COMMAND'
+      i_callback_pf_status_set = 'SET_STATUS'
+      i_html_height_top        = gc_html_height_top
+    TABLES
+      t_outtab                 = i_t_gl_item_output
+    EXCEPTIONS
+      program_error            = 1
+      OTHERS                   = 2.
+  IF sy-subrc <> 0.
+    MESSAGE s010(z03_s40_205_msgs) DISPLAY LIKE 'E'.
+    LEAVE LIST-PROCESSING.
+  ENDIF.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*& Form PREPARE_LAYOUT
+*&---------------------------------------------------------------------*
+*& Prepare ALV layout options
+*&---------------------------------------------------------------------*
+*&      <-- LS_LAYOUT
+*&---------------------------------------------------------------------*
+FORM prepare_layout CHANGING c_layout TYPE slis_layout_alv.
+  c_layout-box_fieldname = 'SELECT_BOX'.
+  c_layout-zebra         = abap_true.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*& Form SET_STATUS
+*&---------------------------------------------------------------------*
+*& Set custom status bar (DYNAMIC FOR REUSE_ALV_GRID_DISPLAY)
+*&---------------------------------------------------------------------*
+*&---------------------------------------------------------------------*
+FORM set_status USING rt_extab TYPE slis_t_extab ##NEEDED ##CALLED.
+  SET PF-STATUS 'ZST03_S40_GL_ITEM_RP'.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*& Form PREPARE_FIELD_CAT
+*&---------------------------------------------------------------------*
+*& Prepare the field catalog for ALV form
+*&---------------------------------------------------------------------*
+*&      <-- LT_FIELD_CAT
+*&---------------------------------------------------------------------*
+FORM prepare_field_cat CHANGING c_t_field_cat TYPE slis_t_fieldcat_alv.
+  CONSTANTS lc_xs              TYPE i     VALUE 6.
+  CONSTANTS lc_s               TYPE i     VALUE 10.
+  CONSTANTS lc_m               TYPE i     VALUE 15.
+  CONSTANTS lc_l               TYPE i     VALUE 20.
+  CONSTANTS lc_xl              TYPE i     VALUE 50.
+  CONSTANTS lc_highlight_color TYPE char4 VALUE 'C500'.
+
+  DATA ls_field_cat TYPE slis_fieldcat_alv.
+
+  CLEAR ls_field_cat.
+  ls_field_cat-fieldname = 'STATUS'.
+  ls_field_cat-seltext_m = TEXT-003.
+  ls_field_cat-icon      = abap_true.
+  ls_field_cat-outputlen = lc_xs.
+  APPEND ls_field_cat TO c_t_field_cat.
+
+  CLEAR ls_field_cat.
+  ls_field_cat-fieldname = 'CUST_NUM'.
+  ls_field_cat-emphasize = lc_highlight_color.
+  ls_field_cat-seltext_m = TEXT-010.
+  ls_field_cat-seltext_l = TEXT-016.
+  ls_field_cat-outputlen = lc_s.
+  APPEND ls_field_cat TO c_t_field_cat.
+
+  CLEAR ls_field_cat.
+  ls_field_cat-fieldname = 'CUST_NAME'.
+  ls_field_cat-seltext_m = TEXT-023.
+  ls_field_cat-seltext_l = TEXT-026.
+  ls_field_cat-outputlen = lc_l.
+  APPEND ls_field_cat TO c_t_field_cat.
+
+  CLEAR ls_field_cat.
+  ls_field_cat-fieldname = 'GL_ACC'.
+  ls_field_cat-emphasize = lc_highlight_color.
+  ls_field_cat-seltext_m = TEXT-006.
+  ls_field_cat-seltext_l = TEXT-008.
+  ls_field_cat-outputlen = lc_s.
+  APPEND ls_field_cat TO c_t_field_cat.
+
+  CLEAR ls_field_cat.
+  ls_field_cat-fieldname = 'DOC_NUM'.
+  ls_field_cat-seltext_m = TEXT-007.
+  ls_field_cat-seltext_l = TEXT-004.
+  ls_field_cat-outputlen = lc_s.
+  APPEND ls_field_cat TO c_t_field_cat.
+
+  CLEAR ls_field_cat.
+  ls_field_cat-fieldname = 'CLEAR_DOC'.
+  ls_field_cat-seltext_s = TEXT-038.
+  ls_field_cat-seltext_m = TEXT-036.
+  ls_field_cat-seltext_l = TEXT-037.
+  ls_field_cat-outputlen = lc_s.
+  APPEND ls_field_cat TO c_t_field_cat.
+
+  CLEAR ls_field_cat.
+  ls_field_cat-fieldname = 'PROF_CENT'.
+  ls_field_cat-seltext_m = TEXT-017.
+  ls_field_cat-seltext_l = TEXT-002.
+  ls_field_cat-outputlen = lc_xs.
+  APPEND ls_field_cat TO c_t_field_cat.
+
+  CLEAR ls_field_cat.
+  ls_field_cat-fieldname = 'DOC_TYPE'.
+  ls_field_cat-seltext_m = TEXT-018.
+  ls_field_cat-seltext_l = TEXT-019.
+  ls_field_cat-outputlen = lc_xs.
+  APPEND ls_field_cat TO c_t_field_cat.
+
+  CLEAR ls_field_cat.
+  ls_field_cat-fieldname = 'POST_DATE'.
+  ls_field_cat-seltext_m = TEXT-021.
+  ls_field_cat-seltext_l = TEXT-022.
+  ls_field_cat-outputlen = lc_s.
+  APPEND ls_field_cat TO c_t_field_cat.
+
+  CLEAR ls_field_cat.
+  ls_field_cat-fieldname = 'DOC_DATE'.
+  ls_field_cat-seltext_m = TEXT-024.
+  ls_field_cat-seltext_l = TEXT-025.
+  ls_field_cat-outputlen = lc_s.
+  APPEND ls_field_cat TO c_t_field_cat.
+
+  CLEAR ls_field_cat.
+  ls_field_cat-fieldname = 'DUE_DATE'.
+  ls_field_cat-seltext_m = TEXT-027.
+  ls_field_cat-outputlen = lc_s.
+  APPEND ls_field_cat TO c_t_field_cat.
+
+  CLEAR ls_field_cat.
+  ls_field_cat-fieldname = 'DAY_OVERDUE'.
+  ls_field_cat-seltext_m = TEXT-028.
+  ls_field_cat-seltext_l = TEXT-029.
+  ls_field_cat-outputlen = lc_xs.
+  APPEND ls_field_cat TO c_t_field_cat.
+
+  CLEAR ls_field_cat.
+  ls_field_cat-fieldname  = 'AMOUNT'.
+  ls_field_cat-seltext_m  = TEXT-030.
+  ls_field_cat-outputlen  = lc_m.
+  ls_field_cat-do_sum     = abap_true.
+  ls_field_cat-cfieldname = 'CURR'.
+  APPEND ls_field_cat TO c_t_field_cat.
+
+  CLEAR ls_field_cat.
+  ls_field_cat-fieldname = 'CURR'.
+  ls_field_cat-seltext_m = TEXT-031.
+  ls_field_cat-seltext_l = TEXT-032.
+  ls_field_cat-outputlen = lc_xs.
+  APPEND ls_field_cat TO c_t_field_cat.
+
+  CLEAR ls_field_cat.
+  ls_field_cat-fieldname = 'TEXT'.
+  ls_field_cat-seltext_m = TEXT-033.
+  ls_field_cat-seltext_l = TEXT-035.
+  ls_field_cat-outputlen = lc_xl.
+  APPEND ls_field_cat TO c_t_field_cat.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*& Form ALV_HEADER
+*&---------------------------------------------------------------------*
+*& Prepare ALV header  (DYNAMIC FOR REUSE_ALV_GRID_DISPLAY)
+*&---------------------------------------------------------------------*
+
+FORM alv_header ##CALLED.
+  DATA lt_comment TYPE slis_t_listheader.
+  DATA ls_comment TYPE LINE OF slis_t_listheader.
+
+  " Title
+  ls_comment-typ  = 'H'.
+  ls_comment-info = TEXT-005.
+  APPEND ls_comment TO lt_comment.
+  CLEAR ls_comment.
+
+  " Date
+  ls_comment-typ = 'S'.
+  ls_comment-key = TEXT-014.
+  CONCATENATE sy-datum+6(2) '.' sy-datum+4(2) '.' sy-datum(4) INTO
+  ls_comment-info. " TODAYS DATE
+  APPEND ls_comment TO lt_comment.
+  CLEAR ls_comment.
+
+  " Generated By
+  ls_comment-typ  = 'S'.
+  ls_comment-key  = TEXT-039.
+  ls_comment-info = sy-uname.
+  APPEND ls_comment TO lt_comment.
+  CLEAR ls_comment.
+
+  CALL FUNCTION 'REUSE_ALV_COMMENTARY_WRITE'
+    EXPORTING
+      it_list_commentary = lt_comment
+      i_logo             = 'ZFA24SAP02_ALV_LOGO'.
+  " this is the object key in Tx- OAER
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*& Form PREPARE_SORT
+*&---------------------------------------------------------------------*
+*& Prepare first display sort
+*&---------------------------------------------------------------------*
+*&      <-- LT_SORT
+*&---------------------------------------------------------------------*
+FORM prepare_sort CHANGING c_t_sort TYPE slis_t_sortinfo_alv.
+  DATA ls_sort TYPE slis_sortinfo_alv.
+
+  ls_sort-spos      = 1.
+  ls_sort-fieldname = 'CUST_NUM'.
+  ls_sort-subtot    = abap_true.
+  ls_sort-up        = abap_true.
+  APPEND ls_sort TO c_t_sort.
+  CLEAR ls_sort.
+
+  ls_sort-spos      = 2.
+  ls_sort-fieldname = 'GL_ACC'.
+  ls_sort-subtot    = abap_true.
+  ls_sort-up        = abap_true.
+  APPEND ls_sort TO c_t_sort.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*& User Command Handlers
+*&---------------------------------------------------------------------*
+*&---------------------------------------------------------------------*
+*& Form HANDLE_USER_COMMAND
+*&---------------------------------------------------------------------*
+*& Handle user action (DYNAMIC FOR REUSE_ALV_GRID_DISPLAY)
+*&---------------------------------------------------------------------*
+*&      --> I_UCOMM
+*&      --> I_SELFIELD
+*&---------------------------------------------------------------------*
+FORM handle_user_command USING i_ucomm    LIKE sy-ucomm ##CALLED
+                               i_selfield TYPE slis_selfield.
+
+  CASE i_ucomm.
+    WHEN 'PRINT'. " Print button
+      PERFORM handle_print USING    gt_gl_item_output
+                           CHANGING gv_okcode
+                                    gv_repnum.
+    WHEN '&IC1'. " Double Click
+      PERFORM handle_double_click USING i_selfield
+                                        gt_gl_item_output.
+  ENDCASE.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*& Form HANDLE_PRINT
+*&---------------------------------------------------------------------*
+*& Handle Print action
+*&---------------------------------------------------------------------*
+*&      --> I_T_GL_ITEM_OUTPUT
+*&      <-- C_OKCODE
+*&      <-- C_REPNUM
+*&---------------------------------------------------------------------*
+FORM handle_print USING    i_t_gl_item_output TYPE ty_t_gl_item_out
+                  CHANGING c_okcode           TYPE syst_ucomm
+                           c_repnum           TYPE n.
+
+  DATA ls_header_data TYPE z03_s40_zss24_header_data.
+  DATA lt_table_data  TYPE z03_s40_zss24_t_table_data.
+  DATA ls_table_data  LIKE LINE OF lt_table_data.
+  FIELD-SYMBOLS <lfs_item> LIKE LINE OF i_t_gl_item_output.
+
+  IF lines( i_t_gl_item_output ) <= 0.
+    RETURN.
+  ENDIF.
+
+  LOOP AT i_t_gl_item_output ASSIGNING <lfs_item>.
+    IF <lfs_item>-select_box = abap_false.
+      CONTINUE.
+    ENDIF.
+
+    MOVE-CORRESPONDING <lfs_item> TO ls_table_data.
+    IF ls_table_data-status = TEXT-041.
+      ls_table_data-status = TEXT-015.
+    ELSE.
+      ls_table_data-status = TEXT-020.
+    ENDIF.
+
+    " Convert for G/L Acc Name query later
+    CALL FUNCTION 'CONVERSION_EXIT_ALPHA_INPUT'
+      EXPORTING
+        input  = ls_table_data-gl_acc
+      IMPORTING
+        output = ls_table_data-gl_acc.
+
+    APPEND ls_table_data TO lt_table_data.
+    CLEAR ls_table_data.
+  ENDLOOP.
+
+  IF lines( lt_table_data ) <= 0.
+    MESSAGE e004(z03_s40_205_msgs).
+  ELSE.
+    " Get Chart Of Account
+    SELECT SINGLE ktopl FROM t001
+      WHERE bukrs = @p_cmp_cd
+      INTO @DATA(ls_ch_of_acc).
+
+    IF sy-subrc = 0 AND ls_ch_of_acc IS NOT INITIAL.
+      " Get G/L Acc Name
+      SELECT saknr, ktopl, spras, txt20
+        FROM skat AS a
+        FOR ALL ENTRIES IN @lt_table_data
+        WHERE a~spras = 'E'
+          AND a~ktopl = @ls_ch_of_acc
+          AND a~saknr = @lt_table_data-gl_acc
+        INTO TABLE @DATA(lt_gl_name).
+    ENDIF.
+
+    LOOP AT lt_table_data ASSIGNING FIELD-SYMBOL(<lfs_table_data>).
+      READ TABLE lt_gl_name WITH KEY saknr = <lfs_table_data>-gl_acc
+           INTO DATA(ls_gl_name).
+      IF sy-subrc = 0.
+        <lfs_table_data>-gl_name = ls_gl_name-txt20.
+      ENDIF.
+
+      " Convert back for display
+      CALL FUNCTION 'CONVERSION_EXIT_ALPHA_OUTPUT'
+        EXPORTING
+          input  = <lfs_table_data>-gl_acc
+        IMPORTING
+          output = <lfs_table_data>-gl_acc.
+    ENDLOOP.
+
+    " Get Report ID
+    CALL SCREEN 1100 STARTING AT 20 10.
+    CLEAR c_okcode.
+
+    IF c_repnum IS NOT INITIAL.
+
+      PERFORM query_header_data USING    p_cmp_cd
+                                CHANGING ls_header_data.
+
+      PERFORM handle_smartform USING    lt_table_data
+                                        ls_header_data
+                               CHANGING c_repnum.
+    ENDIF.
+  ENDIF.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*& Form HANDLE_DOUBLE_CLICK
+*&---------------------------------------------------------------------*
+*& Handle ALV double click action
+*&---------------------------------------------------------------------*
+*&      --> I_SELFIELD
+*&---------------------------------------------------------------------*
+FORM handle_double_click USING i_selfield         TYPE slis_selfield
+                               i_t_gl_item_output TYPE ty_t_gl_item_out.
+
+  IF i_selfield-value IS INITIAL.
+    RETURN.
+  ENDIF.
+
+  CASE i_selfield-fieldname.
+    WHEN 'DOC_NUM'.
+      READ TABLE i_t_gl_item_output INTO DATA(ls_doc) INDEX
+      i_selfield-tabindex.
+      IF sy-subrc = 0.
+        " Set Selection Screen
+        SET PARAMETER ID 'BLN' FIELD i_selfield-value.
+        SET PARAMETER ID 'BUK' FIELD p_cmp_cd.
+        SET PARAMETER ID 'GJR' FIELD ls_doc-fis_year.
+
+        " Call transaction to show
+        TRY.
+            CALL TRANSACTION 'FB03' WITH AUTHORITY-CHECK AND SKIP
+                 FIRST SCREEN.
+          CATCH cx_sy_authorization_error. " Check for authority
+            MESSAGE s019(z03_s40_205_msgs) DISPLAY LIKE 'E'.
+        ENDTRY.
+
+        " Clear Selection Screen
+        SET PARAMETER ID 'BLN' FIELD space.
+        SET PARAMETER ID 'BUK' FIELD space.
+        SET PARAMETER ID 'GJR' FIELD space.
+      ENDIF.
+    WHEN 'CLEAR_DOC'.
+      READ TABLE i_t_gl_item_output INTO DATA(ls_clr) INDEX
+      i_selfield-tabindex.
+      IF sy-subrc = 0.
+        " Convert for query
+        CALL FUNCTION 'CONVERSION_EXIT_ALPHA_INPUT'
+          EXPORTING
+            input  = ls_clr-clear_doc
+          IMPORTING
+            output = ls_clr-clear_doc.
+
+        " Get clearing doc data
+        SELECT SINGLE belnr, gjahr, bukrs, bstat
+          FROM bkpf
+          WHERE belnr = @ls_clr-clear_doc
+            AND bukrs = @p_cmp_cd
+            AND gjahr = @ls_clr-clear_year
+          INTO @DATA(ls_status).
+
+        " Check if clearing doc have line items
+        IF sy-subrc = 0 AND ls_status-bstat <> 'A'.
+          " Set Selection Screen
+          SET PARAMETER ID 'BLN' FIELD i_selfield-value.
+          SET PARAMETER ID 'BUK' FIELD p_cmp_cd.
+          SET PARAMETER ID 'GJR' FIELD ls_clr-clear_year.
+
+          " Call transaction to show
+          TRY.
+              CALL TRANSACTION 'FB03' WITH AUTHORITY-CHECK AND SKIP
+                   FIRST SCREEN.
+            CATCH cx_sy_authorization_error. " Check for authority
+              MESSAGE s019(z03_s40_205_msgs) DISPLAY LIKE 'E'.
+          ENDTRY.
+
+          " Clear Selection Screen
+          SET PARAMETER ID 'BLN' FIELD space.
+          SET PARAMETER ID 'BUK' FIELD space.
+          SET PARAMETER ID 'GJR' FIELD space.
+        ELSE.
+          MESSAGE s000(z03_s40_205_msgs) DISPLAY LIKE 'E'.
+        ENDIF.
+      ENDIF.
+    WHEN 'GL_ACC'.
+      " Set Selection Screen
+      SET PARAMETER ID 'SAK' FIELD i_selfield-value.
+      SET PARAMETER ID 'BUK' FIELD p_cmp_cd.
+
+      " Call transaction to show
+      TRY.
+          CALL TRANSACTION 'FS00' WITH AUTHORITY-CHECK AND SKIP FIRST
+               SCREEN.
+        CATCH cx_sy_authorization_error. " Check for authority
+          MESSAGE s019(z03_s40_205_msgs) DISPLAY LIKE 'E'.
+      ENDTRY.
+
+      " Clear Selection Screen
+      SET PARAMETER ID 'SAK' FIELD space.
+      SET PARAMETER ID 'BUK' FIELD space.
+    WHEN 'CUST_NUM'.
+      " Set Selection Screen
+      SET PARAMETER ID 'KUN' FIELD i_selfield-value.
+      SET PARAMETER ID 'BUK' FIELD p_cmp_cd.
+
+      " Call transaction to show
+      TRY.
+          CALL TRANSACTION 'XD03' WITH AUTHORITY-CHECK AND SKIP FIRST
+               SCREEN.
+        CATCH cx_sy_authorization_error. " Check for authority
+          MESSAGE s019(z03_s40_205_msgs) DISPLAY LIKE 'E'.
+      ENDTRY.
+
+      " Clear Selection Screen
+      SET PARAMETER ID 'KUN' FIELD space.
+      SET PARAMETER ID 'BUK' FIELD space.
+  ENDCASE.
+ENDFORM.
+*&---------------------------------------------------------------------*
+*& Form HANDLE_SMARTFORM
+*&---------------------------------------------------------------------*
+*& Handle SmartForm generation and pdf export
+*&---------------------------------------------------------------------*
+*&      --> I_T_TABLE_DATA
+*&      --> I_HEADER_DATA
+*&      <-- C_REPNUM
+*&---------------------------------------------------------------------*
+
+FORM handle_smartform USING    i_t_table_data TYPE
+z03_s40_zss24_t_table_data
+                               i_header_data  TYPE
+                               z03_s40_zss24_header_data
+                      CHANGING c_repnum       TYPE n.
+
+  CONSTANTS lc_formname TYPE tdsfname VALUE 'ZSF03_S40_GL_ITEM_RP'.
+  DATA lv_def_fina        TYPE string VALUE 'GLReport.pdf'.
+  DATA lv_usr_fupa        TYPE string.
+  DATA lv_usr_act         TYPE i.
+  DATA lv_bin_filesize    TYPE i.
+  DATA lv_repnum          TYPE n LENGTH 10.
+  DATA lv_fm_name         TYPE rs38l_fnam.
+  DATA ls_job_output_info TYPE ssfcrescl.
+  DATA ls_output_opt      TYPE ssfcompop.
+  DATA lt_lines           TYPE STANDARD TABLE OF tline.
+
+  lv_repnum = c_repnum.
+  CLEAR c_repnum. " Transport & clear to use Message E later on
+
+  ls_output_opt-tdimmed = abap_true.
+  ls_output_opt-tdnewid = abap_true.
+
+  CALL FUNCTION 'SSF_FUNCTION_MODULE_NAME'
+    EXPORTING
+      formname           = lc_formname
+    IMPORTING
+      fm_name            = lv_fm_name
+    EXCEPTIONS
+      no_form            = 1
+      no_function_module = 2
+      OTHERS             = 3.
+  IF sy-subrc <> 0.
+    MESSAGE e007(z03_s40_205_msgs) WITH TEXT-012.
+  ENDIF.
+
+  " Render smartforms
+  CALL FUNCTION lv_fm_name
+    EXPORTING
+      output_options   = ls_output_opt
+      header_data      = i_header_data
+      report_num       = lv_repnum
+    IMPORTING
+      job_output_info  = ls_job_output_info
+    TABLES
+      output_table     = i_t_table_data
+    EXCEPTIONS
+      formatting_error = 1
+      internal_error   = 2
+      send_error       = 3
+      user_canceled    = 4
+      OTHERS           = 5.
+  IF sy-subrc <> 0.
+    MESSAGE e007(z03_s40_205_msgs) WITH TEXT-012.
+  ENDIF.
+
+  " Print command was issued
+  IF sy-subrc <> 0 OR lines( ls_job_output_info-spoolids ) <= 0.
+    RETURN.
+  ENDIF.
+
+  " Prepare necessary data
+  TYPES : BEGIN OF ty_get_spooldata,
+            line TYPE c LENGTH 1000,
+            flag TYPE c LENGTH 1,
+          END OF ty_get_spooldata.
+
+  DATA lt_get_spooldata  TYPE STANDARD TABLE OF ty_get_spooldata.
+  DATA gc_max_line_width TYPE c LENGTH 1 VALUE 132.
+
+  " Get OTF from spool job
+  CALL FUNCTION 'RSPO_RETURN_SPOOLJOB'
+    EXPORTING
+      rqident              = ls_job_output_info-spoolids[ 1 ]
+      desired_type         = 'OTF'
+    TABLES
+      buffer               = lt_get_spooldata
+    EXCEPTIONS
+      no_such_job          = 1
+      job_contains_no_data = 2
+      selection_empty      = 3
+      no_permission        = 4
+      can_not_access       = 5
+      read_error           = 6
+      type_no_match        = 7
+      OTHERS               = 8.
+  IF sy-subrc <> 0.
+    MESSAGE e007(z03_s40_205_msgs) WITH TEXT-012.
+  ENDIF.
+
+  " Convert OTF to PDF
+  CALL FUNCTION 'CONVERT_OTF'
+    EXPORTING
+      format                = 'PDF'
+      max_linewidth         = gc_max_line_width
+    IMPORTING
+      bin_filesize          = lv_bin_filesize
+    TABLES
+      otf                   = lt_get_spooldata
+      lines                 = lt_lines
+    EXCEPTIONS
+      err_max_linewidth     = 1
+      err_format            = 2
+      err_conv_not_possible = 3
+      err_bad_otf           = 4
+      OTHERS                = 5.
+  IF sy-subrc <> 0.
+    MESSAGE e007(z03_s40_205_msgs) WITH TEXT-012.
+  ENDIF.
+
+  " Get user filepath and filename
+  CALL FUNCTION 'GUI_FILE_SAVE_DIALOG'
+    EXPORTING
+      window_title      = TEXT-009
+      default_extension = 'pdf'
+      default_file_name = lv_def_fina
+    IMPORTING
+      fullpath          = lv_usr_fupa
+      user_action       = lv_usr_act.
+
+  IF lv_usr_act = 1 OR lv_usr_act = 2.
+    DATA lv_fname TYPE rlgrap-filename.
+    lv_fname = lv_usr_fupa.
+    CALL FUNCTION 'GUI_DELETE_FILE'
+      EXPORTING
+        file_name = lv_fname
+      EXCEPTIONS
+        failed    = 1
+        OTHERS    = 2.
+    IF sy-subrc <> 0 AND sy-subrc <> 1.
+      " SY-SUBRC = 1 even if run successfully, so only handle others
+      MESSAGE e007(z03_s40_205_msgs) WITH TEXT-012.
+    ENDIF.
+  ENDIF.
+
+  " Generate, replace, extend
+  IF lv_usr_act = 0 OR lv_usr_act = 1 OR lv_usr_act = 2.
+    " Download file
+    CALL FUNCTION 'GUI_DOWNLOAD'
+      EXPORTING
+        bin_filesize            = lv_bin_filesize
+        filename                = lv_usr_fupa
+        filetype                = 'BIN'
+        append                  = abap_false
+      TABLES
+        data_tab                = lt_lines
+      EXCEPTIONS
+        file_write_error        = 1
+        no_batch                = 2
+        gui_refuse_filetransfer = 3
+        invalid_type            = 4
+        no_authority            = 5
+        unknown_error           = 6
+        header_not_allowed      = 7
+        separator_not_allowed   = 8
+        filesize_not_allowed    = 9
+        header_too_long         = 10
+        dp_error_create         = 11
+        dp_error_send           = 12
+        dp_error_write          = 13
+        unknown_dp_error        = 14
+        access_denied           = 15
+        dp_out_of_memory        = 16
+        disk_full               = 17
+        dp_timeout              = 18
+        file_not_found          = 19
+        dataprovider_exception  = 20
+        control_flush_error     = 21
+        OTHERS                  = 22.
+    IF sy-subrc = 1.
+      MESSAGE e005(z03_s40_205_msgs).
+    ELSEIF sy-subrc = 5 OR sy-subrc = 15.
+      MESSAGE e009(z03_s40_205_msgs).
+    ELSEIF sy-subrc = 17.
+      MESSAGE e006(z03_s40_205_msgs).
+    ELSEIF sy-subrc <> 0.
+      MESSAGE e010(z03_s40_205_msgs).
+    ENDIF.
+  ELSE.
+    MESSAGE e007(z03_s40_205_msgs) WITH TEXT-012.
+  ENDIF.
+ENDFORM.

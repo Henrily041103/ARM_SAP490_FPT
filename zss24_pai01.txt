@@ -1,0 +1,26 @@
+*&---------------------------------------------------------------------*
+*& Include          Z03_S40_GL_ITEM_RP_PAI01
+*&---------------------------------------------------------------------*
+*&---------------------------------------------------------------------*
+*&   Module  USER_COMMAND_1100  INPUT
+*&---------------------------------------------------------------------*
+*    Handle Screen 1100 Input
+*----------------------------------------------------------------------*
+MODULE user_command_1100 INPUT.
+  IF gv_okcode = 'CONFIRM_REASON' OR gv_okcode IS INITIAL.
+    IF gv_repnum IS INITIAL.
+      MESSAGE s003(z03_s40_205_msgs) WITH TEXT-042 DISPLAY LIKE 'E'.
+    ELSE.
+      SET SCREEN 0.
+      LEAVE SCREEN.
+    ENDIF.
+  ELSE.
+    IF gv_okcode = 'RW'.
+      MESSAGE s007(z03_s40_205_msgs) WITH TEXT-012 DISPLAY LIKE 'E'.
+    ENDIF.
+    CLEAR gv_repnum.
+
+    SET SCREEN 0.
+    LEAVE SCREEN.
+  ENDIF.
+ENDMODULE.
